@@ -1,7 +1,9 @@
+# Configure the Terraform runtime requirements.
 terraform {
   required_version = ">= 1.1.0"
 
   required_providers {
+    # Azure Resource Manager provider and version
     azurerm = {
       source  = "hashicorp/azurerm"
       version = "~> 3.0.2"
@@ -13,41 +15,31 @@ terraform {
   }
 }
 
+# Define providers and their config params
 provider "azurerm" {
+ 
   features {}
 }
 
-provider "cloudinit" {}
-
-variable "labelPrefix" {
-  description = "Your college username. This will form the beginning of various resource names."
-  type        = string
+provider "cloudinit" {
+  # Configuration options
 }
 
-variable "region" {
-  description = "Azure region for the deployment"
-  type        = string
-  default     = "East US"
-}
-
-variable "admin_username" {
-  description = "Admin username for SSH access"
-  type        = string
-  default     = "azureadmin"
-}
-
+# Define the Azure Resource Group
 resource "azurerm_resource_group" "rg" {
   name     = "${var.labelPrefix}-A05-RG"
   location = var.region
 }
 
+# Define the Public IP Address
 resource "azurerm_public_ip" "public_ip" {
   name                = "${var.labelPrefix}-A05-PublicIP"
-  location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Dynamic"
+  location            = azurerm_resource_group.rg.location
+  allocation_method   = "Static"
 }
 
+# Define the virtual network
 resource "azurerm_virtual_network" "vnet" {
   name                = "${var.labelPrefix}-A05-VNet"
   location            = azurerm_resource_group.rg.location
@@ -55,6 +47,7 @@ resource "azurerm_virtual_network" "vnet" {
   address_space       = ["10.0.0.0/16"]
 }
 
+# Define the Subnet
 resource "azurerm_subnet" "subnet" {
   name                 = "${var.labelPrefix}-A05-Subnet"
   resource_group_name  = azurerm_resource_group.rg.name
@@ -62,6 +55,7 @@ resource "azurerm_subnet" "subnet" {
   address_prefixes     = ["10.0.1.0/24"]
 }
 
+# Define the security group
 resource "azurerm_network_security_group" "nsg" {
   name                = "${var.labelPrefix}-A05-NSG"
   location            = azurerm_resource_group.rg.location
@@ -91,21 +85,27 @@ resource "azurerm_network_security_group" "nsg" {
     destination_address_prefix = "*"
   }
 }
-
+# Define the Virtual Network Interface
 resource "azurerm_network_interface" "nic" {
   name                = "${var.labelPrefix}-A05-NIC"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
   ip_configuration {
-    name                          = "internal"
+    name                          = "webserver-nic-config"
     subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "Dynamic"
     public_ip_address_id          = azurerm_public_ip.public_ip.id
+    private_ip_address_allocation = "Dynamic"
   }
 }
 
-data "cloudinit_config" "config" {
+#  Attach the Security Group to the NIC
+resource "azurerm_network_interface_security_group_association" "nic_nsg_assoc" {
+  network_interface_id      = azurerm_network_interface.nic.id
+  network_security_group_id = azurerm_network_security_group.nsg.id
+}
+
+data "cloudinit_config" "init" {
   gzip          = false
   base64_encode = false
 
@@ -115,6 +115,7 @@ data "cloudinit_config" "config" {
   }
 }
 
+# Virtual Machine
 resource "azurerm_linux_virtual_machine" "vm" {
   name                  = "${var.labelPrefix}-A05-VM"
   location              = azurerm_resource_group.rg.location
@@ -122,6 +123,11 @@ resource "azurerm_linux_virtual_machine" "vm" {
   size                  = "Standard_B1s"
   admin_username        = var.admin_username
   network_interface_ids = [azurerm_network_interface.nic.id]
+
+  admin_ssh_key {
+    username   = var.admin_username
+    public_key = file("/home/thoufeek/.ssh/id_rsa.pub")
+  }
 
   os_disk {
     caching              = "ReadWrite"
@@ -135,13 +141,5 @@ resource "azurerm_linux_virtual_machine" "vm" {
     version   = "latest"
   }
 
-  custom_data = data.cloudinit_config.config.rendered
-}
-
-output "resource_group_name" {
-  value = azurerm_resource_group.rg.name
-}
-
-output "public_ip_address" {
-  value = azurerm_public_ip.public_ip.ip_address
+  custom_data = base64encode(data.cloudinit_config.init.rendered)
 }
